@@ -1,17 +1,17 @@
+#!/usr/bin/python3
+
 import glob
 import time
+import configparser
+import argparse
 import os
+from Logger import Logger
+
 from os.path import exists
 
-currentLogFile = ""
-currentSpeed = 0
 manualFanControl = False
-logFile = '/tmp/fan-manager.log'
-pollInterval = 5                    # in seconds
-maunalCutOff = 60                   # Max Temp before manual control is disabled 
 daily_list = []                     # length =  86400 / pollinterval
 recent_list = []                    # length =  recent_list_time / pollinterval
-recent_list_time = 900              # in seconds
 
 ## Temp : fanspeed % in hexadecimal 
 tempMap = {}
@@ -28,18 +28,24 @@ def FanControlSwitch(enable):
         os.system(cmd)
         manualFanControl = False
 
-def get_cpu_temp():
+def get_cpu_temp(tempType):
     cpu_temps = []
     for x in glob.glob("/sys/class/thermal/thermal_zone[0-9]/temp"): 
         tempFile = open(x)
         cpu_temps.append(int(tempFile.read().strip('\n')))
         tempFile.close()
 
-    averageTemp = 0
-    for i in cpu_temps:
-        averageTemp += i
-
-    temp = int((int(averageTemp)/1000)/len(cpu_temps))
+    if (tempType == "Max"):
+        tTemp = 0
+        for i in cpu_temps:
+            if (i > tTemp):
+                tTemp = i   
+        temp = int((int(tTemp)/1000))     
+    elif ( tempType == "Avg" ):
+        tTemp = 0
+        for i in cpu_temps:
+            tTemp += i
+        temp = int((int(tTemp)/1000)/len(cpu_temps))
 
     if (len(daily_list) >= (86400/pollInterval)):
         daily_list.pop()
@@ -52,12 +58,12 @@ def get_cpu_temp():
 
     return temp
 
-def setFanSpeed(temp, speed):
+def setFanSpeed(speed):
     global currentSpeed
-    currentSpeed = speed
     FanControlSwitch(True)
-    cmd = f"ipmitool raw 0x30 0x30 0x02 0xff 0x{speed}"
+    cmd = f"ipmitool raw 0x30 0x30 0x02 0xff {hex(speed)}"
     os.system(cmd)
+    currentSpeed = speed
 
 def loadTempMap(filePath = './default.tm'):
     global tempMap
@@ -68,38 +74,99 @@ def loadTempMap(filePath = './default.tm'):
                 tempMap.update({line.split(',')[0]: line.split(',')[1].strip('\n')})
                 line = f.readline()
 
+def handle_cleanup():
+    ## Attempt to revert fans to system control - this is not always called depending on how the program exitsd
+    FanControlSwitch(False)
+    if (log != None):
+        log.Dispose()
+
+def TempMap_Handler(temp):
+    if ( tempMap[str(temp)] != currentSpeed ):
+        log.write(f"Temp :{temp} - Setting Fan Speed {int(tempMap[str(temp)],16)}%")
+        setFanSpeed(temp, tempMap[str(temp)])
+    else:
+        log.write(f"Temp :{temp} - Fan Speed {int(tempMap[str(temp)],16)}% not changed")
+
+def TargetTempWithBuffer_Handler(temp):
+    global log
+    newSpeed = -1
+    ## Temp Higher than target + buffer - Raise fan speed
+    if (temp > (config.getint("TargetTempWithBuffer","TargetTemp")+config.getint("TargetTempWithBuffer","Buffer"))):
+        if (currentSpeed < 100 ):
+            newSpeed = currentSpeed + 1
+    ## Temp Lower than target - buffer - Lower fan speed
+    elif (temp < (config.getint("TargetTempWithBuffer","TargetTemp")-config.getint("TargetTempWithBuffer","Buffer"))):
+        if (currentSpeed > 0 ):
+            newSpeed = currentSpeed - 1  
+
+    ## if newspeed not set it must be in range so do nothing 
+    ## Set fan speed to new speed value (also updates currentspeed)
+    if (newSpeed == -1):
+        #do nothing
+        log.write(f"Temp: {temp}\tFan Speed: {currentSpeed}",endWith="")
+    else:
+        setFanSpeed(newSpeed)
+        log.write(f"Temp: {temp}\tFan Speed: {currentSpeed}",endWith="")
+
+
+
 def main():
-    ## Setup Logging
-    if (not exists(logFile)):
-        fp = open(logFile, 'x')
-        fp.close()
-    log = open(logFile, 'a')
-    log.write("Starting Fan Manager\n")
+    
+    ## Load Args
+    parser = argparse.ArgumentParser(description='Fan Manager for Dell Servers.')
+    parser.add_argument('--ControlType', '-T', default="TargetTempWithBuffer",
+                        choices=['TargetTempWithBuffer', 'TempMap'], help='Control Type')
+    parser.add_argument('--ConfigFile', '-C', default='/etc/fan-manager/conf.d/default.conf',
+                        help='Path to Configuration File')
+    parser.add_argument('--TemperatureCalculation', '-A', default='Max',
+                        choices=['Max', 'Avg'], help='Value to use for Temprature calculation')
 
-    loadTempMap()
+    args = parser.parse_args()
 
-    ## Set Fan control to manual
-    FanControlSwitch(True)
-    exit = False
-    while (not exit):
-        time.sleep(pollInterval)
-        t = get_cpu_temp()
-        if(t > 60):
-            log.write("Temp too high! Disabling Manual Fan Control\n")
-            FanControlSwitch(False)
-        else:
-            FanControlSwitch(True)
-            if ( tempMap[str(t)] != currentSpeed ):
-                log.write(f"Temp :{t} - Setting Fan Speed {int(tempMap[str(t)],16)}%")
-                setFanSpeed(t, tempMap[str(t)])
+    try:
+        ## Load Config
+        global config
+        global log
+        global currentSpeed
+        global pollInterval
+        global recent_list_time
+
+        if(not exists(args.ConfigFile)):
+            print(f"Can not access {args.ConfigFile} or it does not exist")
+            return
+        config = configparser.ConfigParser()
+        config.read_file(open(args.ConfigFile))
+        
+        log = Logger(filePath=config["Logging"]["LogDirectory"], maxFileSize=config["Logging"]["MaxLogSize"], logsToKeep=config["Logging"]["LogFilesToKeep"])
+        log.write("Starting Fan Manager\n")
+
+        pollInterval = config.getint("System","PollInterval")
+        currentSpeed = config.getint("System","StartupSpeed")
+        recent_list_time = config.getint("System","RecentTime")
+
+        ## Set Fan control to manual
+        FanControlSwitch(True)
+        exit = False
+        while (not exit):
+            time.sleep(pollInterval)
+            temp = get_cpu_temp(config["System"]["TemperatureCalculation"])
+            if(temp > config.getint("System","HighTempCutOff")):
+                log.write("Temp too high! Disabling Manual Fan Control\n")
+                FanControlSwitch(False)
             else:
-                log.write(f"Temp :{t} - Fan Speed {int(tempMap[str(t)],16)}% not changed")
-        average_24 = round(sum(daily_list) / len(daily_list),2)
-        average_recent = round(sum(recent_list) / len(recent_list),2)
-        log.write(f" - 24 hr Average: {average_24} - Recent Average: {average_recent}\n")
-                
+                match config["System"]["ControlType"]:
+                    case "TargetTempWithBuffer":
+                        TargetTempWithBuffer_Handler(temp)
+                    case "TempMap":
+                        TempMap_Handler(temp)
 
-        log.flush()  
+            average_24 = round(sum(daily_list) / len(daily_list),2)
+            average_recent = round(sum(recent_list) / len(recent_list),2)
+            log.write(f"\t24hr Avg: {average_24}\t{int(recent_list_time/60)}min Avg: {average_recent}", startWith="")
+                    
+    finally:
+        handle_cleanup()
+
 
 
 if __name__ == "__main__":
