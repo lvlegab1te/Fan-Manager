@@ -9,7 +9,7 @@ class Logger:
         global _maxFileSize
         _maxFileSize = int(maxFileSize)
         _filePath = filePath
-        logFile = open(f"{_filePath}fan-manager.log", 'a')
+        logFile = open(f"{_filePath}fan-manager.log", 'a+')
 
     def write(self, message, startWith = "datetime",  endWith = "\n"):
         self.CheckFile()
@@ -30,7 +30,8 @@ class Logger:
         logFile.flush()
 
     def CheckFile(self):
-        file_size = os.path.getsize(_filePath)
+        global logFile
+        file_size = os.path.getsize(f"{_filePath}fan-manager.log")
         if (file_size > (_maxFileSize * 1024)):
             logFile.close()
             files = os.listdir(_filePath)
@@ -41,7 +42,9 @@ class Logger:
                 if file.startswith(f'fan-manager.log{formatted_date}'):
                     count = count + 1
             
-            os.rename(_filePath, f"{_filePath}.{count+1}")
+            os.rename(f"{_filePath}fan-manager.log", f"{_filePath}fan-manager.log{count+1}")
+            logFile = open(f"{_filePath}fan-manager.log", 'a+')
+
 
     def Dispose(self):
         logFile.close()
