@@ -75,38 +75,42 @@ def loadTempMap(filePath = './default.tm'):
                 line = f.readline()
 
 def handle_cleanup():
-    ## Attempt to revert fans to system control - this is not always called depending on how the program exitsd
+    ## Attempt to revert fans to system control - this is not always called depending on how the program exits
     FanControlSwitch(False)
     if (log != None):
         log.Dispose()
 
 def TempMap_Handler(temp):
     if ( tempMap[str(temp)] != currentSpeed ):
-        log.write(f"Temp :{temp} - Setting Fan Speed {int(tempMap[str(temp)],16)}%")
+        log.write(f" Temp :{temp} - Setting Fan Speed {int(tempMap[str(temp)],16)}%")
         setFanSpeed(temp, tempMap[str(temp)])
     else:
-        log.write(f"Temp :{temp} - Fan Speed {int(tempMap[str(temp)],16)}% not changed")
+        log.write(f" Temp :{temp} - Fan Speed {int(tempMap[str(temp)],16)}% not changed")
 
 def TargetTempWithBuffer_Handler(temp):
     global log
     newSpeed = -1
+    if (shiftby == "distance"):
+        shift = abs(config.getint("TargetTempWithBuffer","TargetTemp") - temp)
+    else:
+        shift = 1
     ## Temp Higher than target + buffer - Raise fan speed
     if (temp > (config.getint("TargetTempWithBuffer","TargetTemp")+config.getint("TargetTempWithBuffer","Buffer"))):
         if (currentSpeed < 100 ):
-            newSpeed = currentSpeed + 1
+            newSpeed = currentSpeed + shift
     ## Temp Lower than target - buffer - Lower fan speed
     elif (temp < (config.getint("TargetTempWithBuffer","TargetTemp")-config.getint("TargetTempWithBuffer","Buffer"))):
-        if (currentSpeed > 0 ):
-            newSpeed = currentSpeed - 1  
+        if (currentSpeed > config.getint("System","MinFanSpeed") ):
+            newSpeed = currentSpeed - shift
 
     ## if newspeed not set it must be in range so do nothing 
     ## Set fan speed to new speed value (also updates currentspeed)
     if (newSpeed == -1):
         #do nothing
-        log.write(f"Temp: {temp}\tFan Speed: {currentSpeed}",endWith="")
+        log.write(f" Temp: {temp}\tFan Speed: {currentSpeed}",endWith="")
     else:
         setFanSpeed(newSpeed)
-        log.write(f"Temp: {temp}\tFan Speed: {currentSpeed}",endWith="")
+        log.write(f" Temp: {temp}\tFan Speed: {currentSpeed}",endWith="")
 
 
 
@@ -130,20 +134,25 @@ def main():
         global currentSpeed
         global pollInterval
         global recent_list_time
+        global shiftby
+        global statslog
 
-        if(not exists(args.ConfigFile)):
+        if (not exists(args.ConfigFile)):
             print(f"Can not access {args.ConfigFile} or it does not exist")
             return
         config = configparser.ConfigParser()
         config.read_file(open(args.ConfigFile))
         
-        log = Logger(filePath=config["Logging"]["LogDirectory"], maxFileSize=config["Logging"]["MaxLogSize"], logsToKeep=config["Logging"]["LogFilesToKeep"])
-        log.write("Starting Fan Manager\n")
+        log = Logger(filePath=config["Logging"]["LogDirectory"], fileName=config["Logging"]["LogName"], maxFileSize=config["Logging"]["MaxLogSize"], logsToKeep=config["Logging"]["LogFilesToKeep"])
+        log.write(" Starting Fan Manager\n")
+
+        if (config.getboolean("Logging","CollectStats")):
+            statslog = Logger(filePath=config["Logging"]["StatsDirectory"], fileName=config["Logging"]["StatsName"], maxFileSize=config["Logging"]["StatsMaxLogSize"], logsToKeep=config["Logging"]["StatsLogFilesToKeep"])
 
         pollInterval = config.getint("System","PollInterval")
         currentSpeed = config.getint("System","StartupSpeed")
         recent_list_time = config.getint("System","RecentTime")
-
+        shiftby = config["TargetTempWithBuffer"]["ShiftBy"]
         ## Set Fan control to manual
         FanControlSwitch(True)
         exit = False
@@ -151,7 +160,7 @@ def main():
             time.sleep(pollInterval)
             temp = get_cpu_temp(config["System"]["TemperatureCalculation"])
             if(temp > config.getint("System","HighTempCutOff")):
-                log.write("Temp too high! Disabling Manual Fan Control\n")
+                log.write(" Temp too high! Disabling Manual Fan Control\n")
                 FanControlSwitch(False)
             else:
                 match config["System"]["ControlType"]:
@@ -163,6 +172,8 @@ def main():
             average_24 = round(sum(daily_list) / len(daily_list),2)
             average_recent = round(sum(recent_list) / len(recent_list),2)
             log.write(f"\t24hr Avg: {average_24}\t{int(recent_list_time/60)}min Avg: {average_recent}", startWith="")
+            if (config.getboolean("Logging","CollectStats")):
+                statslog.write(f",{currentSpeed},{temp}")
                     
     finally:
         handle_cleanup()
