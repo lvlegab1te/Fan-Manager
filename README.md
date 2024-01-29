@@ -6,11 +6,20 @@ ipmitool
 python3
 
 # Install
-move fan-manager.service to /etc/systemd/system
+run inclueded install.sh 
 
-systemctl daemon-reload
-systemctl enable /etc/systemd/system/fan-manager.service
-systemctl start fan-manager.service
+This will create the directories
+/etc/fan-manager/conf.d/
+/etc/fan-manager/bin
+/var/log/fan-manager
+
+copy the files into place from the cloned repo
+
+symlink the service file into /etc/systemd/system/ and enable it
+
+Configure via /etc/fan-manager/conf.d/default.conf
+then start with
+systemctl start fan-manager
 
 # Tested on 
 Dell R720, R720XD, R730XD
